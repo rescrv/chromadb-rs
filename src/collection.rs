@@ -10,7 +10,7 @@ use super::{
 };
 
 /// A collection representation for interacting with the associated ChromaDB collection.
-#[derive(Deserialize, Debug)]
+#[derive(Clone, Deserialize, Debug)]
 pub struct ChromaCollection {
     #[serde(skip)]
     pub(super) api: Arc<APIClientAsync>,
@@ -361,7 +361,7 @@ impl ChromaCollection {
 #[derive(Deserialize, Debug)]
 pub struct GetResult {
     pub ids: Vec<String>,
-    pub metadatas: Option<Vec<Option<Vec<Option<Metadata>>>>>,
+    pub metadatas: Option<Metadatas>,
     pub documents: Option<Vec<Option<String>>>,
     pub embeddings: Option<Vec<Option<Embedding>>>,
 }

@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use base64::prelude::*;
 use reqwest::{Client, Method, Response};
@@ -34,12 +35,15 @@ impl Default for ChromaAuthMethod {
 
 #[derive(Default, Debug)]
 pub(super) struct APIClientAsync {
-    client_pool: Mutex<VecDeque<Arc<Client>>>,
+    client_pool: tokio::sync::Mutex<VecDeque<Arc<Client>>>,
     api_endpoint: String,
     api_endpoint_v1: String,
     auth_method: ChromaAuthMethod,
     tenant: String,
     database: String,
+    await_connection: tokio::sync::Notify,
+    connections_alloc: AtomicUsize,
+    connections_total: AtomicUsize,
 }
 
 #[derive(serde::Deserialize)]
@@ -55,11 +59,12 @@ impl APIClientAsync {
         auth_method: ChromaAuthMethod,
         tenant: String,
         database: String,
+        connections: usize,
     ) -> Self {
         let client_pool = (0..128)
             .map(|_| Arc::new(Client::new()))
             .collect::<VecDeque<_>>();
-        let client_pool = Mutex::new(client_pool);
+        let client_pool = tokio::sync::Mutex::new(client_pool);
         Self {
             client_pool,
             api_endpoint: format!("{}/api/v2", endpoint),
@@ -67,6 +72,9 @@ impl APIClientAsync {
             auth_method,
             tenant,
             database,
+            await_connection: tokio::sync::Notify::new(),
+            connections_alloc: AtomicUsize::new(0),
+            connections_total: AtomicUsize::new(connections),
         }
     }
 
@@ -126,16 +134,32 @@ impl APIClientAsync {
         json_body: Option<Value>,
     ) -> Result<Response> {
         let client = {
-            // SAFETY(rescrv): Mutex poisioning.
-            let mut pool = self.client_pool.lock().unwrap();
-            pool.pop_front().unwrap_or_else(|| Arc::new(Client::new()))
+            loop {
+                let mut pool = self.client_pool.lock().await;
+                if let Some(client) = pool.pop_front() {
+                    break client;
+                }
+                let alloc = self.connections_alloc.load(Ordering::Relaxed);
+                // If we haven't allocated everything, and we successfully allocated one more,
+                // break with a new client.
+                if alloc < self.connections_total.load(Ordering::Relaxed)
+                    && self
+                        .connections_alloc
+                        .compare_exchange(alloc, alloc + 1, Ordering::Relaxed, Ordering::Relaxed)
+                        .is_ok()
+                {
+                    break Arc::new(Client::new());
+                }
+                drop(pool);
+                self.await_connection.notified().await;
+            }
         };
         let request = client.request(method, url);
         let res = Self::send_request_no_self(request, &self.auth_method, json_body).await;
         {
-            // SAFETY(rescrv): Mutex poisioning.
-            let mut pool = self.client_pool.lock().unwrap();
+            let mut pool = self.client_pool.lock().await;
             pool.push_front(client);
+            self.await_connection.notify_one();
         }
         res
     }
