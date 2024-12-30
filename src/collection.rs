@@ -10,7 +10,7 @@ use super::{
 };
 
 /// A collection representation for interacting with the associated ChromaDB collection.
-#[derive(Deserialize, Debug)]
+#[derive(Clone, Deserialize, Debug)]
 pub struct ChromaCollection {
     #[serde(skip)]
     pub(super) api: Arc<APIClientAsync>,

@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 pub use super::api::{ChromaAuthMethod, ChromaTokenHeader};
 use super::{
@@ -15,6 +16,7 @@ const DEFAULT_ENDPOINT: &str = "http://localhost:8000";
 // A client representation for interacting with ChromaDB.
 pub struct ChromaClient {
     api: Arc<APIClientAsync>,
+    collection_cache: Mutex<HashMap<String, ChromaCollection>>,
 }
 
 /// The options for instantiating ChromaClient.
@@ -54,6 +56,7 @@ impl ChromaClient {
             std::env::var("CHROMA_HOST")
                 .unwrap_or(std::env::var("CHROMA_URL").unwrap_or(DEFAULT_ENDPOINT.to_string()))
         };
+
         let user_identity = APIClientAsync::get_auth(&endpoint, &auth).await?;
         Ok(ChromaClient {
             api: Arc::new(APIClientAsync::new(
@@ -62,6 +65,7 @@ impl ChromaClient {
                 user_identity.tenant,
                 database,
             )),
+            collection_cache: Mutex::new(HashMap::new()),
         })
     }
 
@@ -83,6 +87,13 @@ impl ChromaClient {
         metadata: Option<Metadata>,
         get_or_create: bool,
     ) -> Result<ChromaCollection> {
+        if get_or_create {
+            // SAFETY(rescrv): Mutex poisioning.
+            let collection_cache = self.collection_cache.lock().unwrap();
+            if let Some(collection) = collection_cache.get(name) {
+                return Ok(collection.clone());
+            }
+        }
         let request_body = json!({
             "name": name,
             "metadata": metadata,
@@ -94,6 +105,11 @@ impl ChromaClient {
             .await?;
         let mut collection = response.json::<ChromaCollection>().await?;
         collection.api = self.api.clone();
+        // SAFETY(rescrv): Mutex poisioning.
+        let mut collection_cache = self.collection_cache.lock().unwrap();
+        collection_cache
+            .entry(name.to_string())
+            .or_insert(collection.clone());
         Ok(collection)
     }
 
