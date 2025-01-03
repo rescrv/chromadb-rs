@@ -160,6 +160,7 @@ impl APIClientAsync {
             // SAFETY(rescrv): Mutex poisioning.
             let mut pool = self.client_pool.lock().unwrap();
             pool.push_front(client);
+            self.await_connection.notify_one();
         }
         res
     }
