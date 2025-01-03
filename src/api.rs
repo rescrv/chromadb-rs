@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 
 use base64::prelude::*;
 use reqwest::{Client, Method, Response};
@@ -40,6 +41,9 @@ pub(super) struct APIClientAsync {
     auth_method: ChromaAuthMethod,
     tenant: String,
     database: String,
+    await_connection: Condvar,
+    connections_alloc: AtomicUsize,
+    connections_total: AtomicUsize,
 }
 
 #[derive(serde::Deserialize)]
@@ -55,6 +59,7 @@ impl APIClientAsync {
         auth_method: ChromaAuthMethod,
         tenant: String,
         database: String,
+        connections: usize,
     ) -> Self {
         let client_pool = (0..128)
             .map(|_| Arc::new(Client::new()))
@@ -67,6 +72,9 @@ impl APIClientAsync {
             auth_method,
             tenant,
             database,
+            await_connection: Condvar::new(),
+            connections_alloc: AtomicUsize::new(0),
+            connections_total: AtomicUsize::new(connections),
         }
     }
 
@@ -128,7 +136,23 @@ impl APIClientAsync {
         let client = {
             // SAFETY(rescrv): Mutex poisioning.
             let mut pool = self.client_pool.lock().unwrap();
-            pool.pop_front().unwrap_or_else(|| Arc::new(Client::new()))
+            loop {
+                if let Some(client) = pool.pop_front() {
+                    break client;
+                }
+                let alloc = self.connections_alloc.load(Ordering::Relaxed);
+                // If we haven't allocated everything, and we successfully allocated one more,
+                // break with a new client.
+                if alloc < self.connections_total.load(Ordering::Relaxed)
+                    && self
+                        .connections_alloc
+                        .compare_exchange(alloc, alloc + 1, Ordering::Relaxed, Ordering::Relaxed)
+                        .is_ok()
+                {
+                    break Arc::new(Client::new());
+                }
+                pool = self.await_connection.wait(pool).unwrap();
+            }
         };
         let request = client.request(method, url);
         let res = Self::send_request_no_self(request, &self.auth_method, json_body).await;

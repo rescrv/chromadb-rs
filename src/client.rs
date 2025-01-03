@@ -28,6 +28,8 @@ pub struct ChromaClientOptions {
     pub auth: ChromaAuthMethod,
     /// Database to use for the client.  Must be a valid database and match the authorization.
     pub database: String,
+    /// Number of concurrent connections to open to the Chroma Server.
+    pub connections: usize,
 }
 
 impl Default for ChromaClientOptions {
@@ -36,6 +38,7 @@ impl Default for ChromaClientOptions {
             url: None,
             auth: ChromaAuthMethod::None,
             database: "default_database".to_string(),
+            connections: 4,
         }
     }
 }
@@ -48,6 +51,7 @@ impl ChromaClient {
             url,
             auth,
             database,
+            connections,
         }: ChromaClientOptions,
     ) -> Result<ChromaClient> {
         let endpoint = if let Some(url) = url {
@@ -64,6 +68,7 @@ impl ChromaClient {
                 auth,
                 user_identity.tenant,
                 database,
+                connections,
             )),
             collection_cache: Mutex::new(HashMap::new()),
         })
