@@ -61,10 +61,7 @@ impl APIClientAsync {
         database: String,
         connections: usize,
     ) -> Self {
-        let client_pool = (0..128)
-            .map(|_| Arc::new(Client::new()))
-            .collect::<VecDeque<_>>();
-        let client_pool = tokio::sync::Mutex::new(client_pool);
+        let client_pool = tokio::sync::Mutex::new(VecDeque::default());
         Self {
             client_pool,
             api_endpoint: format!("{}/api/v2", endpoint),

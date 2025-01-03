@@ -161,12 +161,23 @@ impl ChromaClient {
     /// * If the collection name is invalid
     /// * If the collection does not exist
     pub async fn get_collection(&self, name: &str) -> Result<ChromaCollection> {
+        {
+            // SAFETY(rescrv): Mutex poisioning.
+            let collection_cache = self.collection_cache.lock().unwrap();
+            if let Some(collection) = collection_cache.get(name) {
+                return Ok(collection.clone());
+            }
+        }
         let response = self
             .api
             .get_database(&format!("/collections/{}", name))
             .await?;
         let mut collection = response.json::<ChromaCollection>().await?;
         collection.api = self.api.clone();
+        let mut collection_cache = self.collection_cache.lock().unwrap();
+        collection_cache
+            .entry(name.to_string())
+            .or_insert(collection.clone());
         Ok(collection)
     }
 
